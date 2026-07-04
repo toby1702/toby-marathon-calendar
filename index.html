@@ -661,6 +661,14 @@ body{background:#f6f8fb}
     </div>
   </div>
 
+  <!-- Zone Mix -->
+  <div class="tracker-section">
+    <div class="ts-header">🎛️ Training Zone Mix — from your Strava splits</div>
+    <div class="ts-card">
+      <div id="zoneMix" style="padding:14px"></div>
+    </div>
+  </div>
+
   <!-- Key Workout Completion -->
   <div class="tracker-section">
     <div class="ts-header">🔑 Key Session Completion</div>
@@ -1850,10 +1858,33 @@ function _analyzeSplits(d) {
   const fast  = paces.filter(p => p < FAST_KM).length;
   const mp    = paces.filter(p => p >= MP_LO && p <= MP_HI).length;
   const best  = Math.min(...paces);
+  // Training-zone mix (km per zone, by split pace)
+  const zones = {z5: 0, z4: 0, mp: 0, ez: 0, rec: 0};
+  paces.forEach(p => {
+    if      (p < 230) zones.z5++;       // < 3:50 — VO2/interval
+    else if (p < 245) zones.z4++;       // 3:50–4:05 — threshold
+    else if (p <= 265) zones.mp++;      // 4:05–4:25 — marathon pace
+    else if (p <= 310) zones.ez++;      // 4:25–5:10 — easy aerobic
+    else zones.rec++;                   // > 5:10 — recovery
+  });
   // Interval signature: ≥3 fast kms interleaved with slower recovery kms
   let flips = 0;
   for (let i = 1; i < paces.length; i++) if ((paces[i] < FAST_KM) !== (paces[i-1] < FAST_KM)) flips++;
   const intervals = fast >= 3 && flips >= 3 && fast < paces.length;
+  // Aerobic decoupling (HR drift): efficiency 1st half vs 2nd half. <5% = well-coupled.
+  let drift = null;
+  const hrs = splits.map(s => s.average_heartrate || 0);
+  if (paces.length >= 12 && hrs.filter(h => h > 0).length >= paces.length * 0.8) {
+    const half = Math.floor(paces.length / 2);
+    const ef = (ps, hs) => {
+      let e = 0, n = 0;
+      ps.forEach((p, i) => { if (hs[i] > 0) { e += (1000 / p) / hs[i]; n++; } });
+      return n ? e / n : 0;
+    };
+    const ef1 = ef(paces.slice(0, half), hrs.slice(0, half));
+    const ef2 = ef(paces.slice(half),    hrs.slice(half));
+    if (ef1 > 0 && ef2 > 0) drift = Math.round((ef1 / ef2 - 1) * 1000) / 10;
+  }
   const parts = [];
   if (intervals) parts.push(`⚡ interval session — ${fast} fast km, best ${_fmtSecKm(best)}/km`);
   else parts.push(`best km ${_fmtSecKm(best)}/km`);
@@ -1865,19 +1896,55 @@ function _analyzeSplits(d) {
     const diff = Math.round(a2 - a1);
     parts.push(diff <= 0 ? `negative split (${diff}s/km) 👏` : `positive split (+${diff}s/km)`);
   }
-  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best)};
+  if (drift !== null) parts.push(`❤️ HR drift ${drift >= 0 ? "+" : ""}${drift}%${drift < 5 ? " 👍" : drift > 8 ? " — big fade, watch fatigue" : ""}`);
+  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best), drift, zones};
+}
+
+// From the laps endpoint: true rep structure for interval sessions
+function _analyzeLaps(laps) {
+  const work = (laps || []).filter(l =>
+    l.distance >= 300 && l.moving_time > 0 && (l.moving_time / (l.distance / 1000)) < FAST_KM);
+  if (work.length < 3) return null;
+  const rp   = work.map(l => l.moving_time / (l.distance / 1000));
+  const avg  = rp.reduce((a, b) => a + b, 0) / rp.length;
+  const sd   = Math.sqrt(rp.reduce((a, b) => a + (b - avg) * (b - avg), 0) / rp.length);
+  const avgD = work.reduce((a, l) => a + l.distance, 0) / work.length;
+  const dLbl = avgD >= 950 ? (Math.round(avgD / 100) / 10) + "km" : Math.round(avgD / 50) * 50 + "m";
+  return {n: work.length, avg: Math.round(avg), sd: Math.round(sd), dLbl};
 }
 
 async function _analyzeNewRuns(runs, token) {
   const cache = _analysisCache();
   const todo = [];
-  runs.forEach(r => (r.ids || []).forEach(id => { if (!(id in cache)) todo.push(id); }));
-  for (const id of todo.slice(0, 20)) {
+  // (Re-)analyse activities that are new OR were analysed before zones/HR-drift existed
+  runs.forEach(r => (r.ids || []).forEach(id => {
+    if (!(id in cache) || (cache[id].sum && !cache[id].zones)) todo.push(id);
+  }));
+  let calls = 0;                                    // ≤20 API calls per sync, laps included
+  for (const id of todo) {
+    if (calls >= 20) break;
     try {
       const resp = await fetch(`${STRAVA_API}/activities/${id}`, {headers: {Authorization: "Bearer " + token}, signal: AbortSignal.timeout(15000)});
+      calls++;
       if (resp.status === 429) break;               // rate-limited — resume next sync
       if (!resp.ok) { cache[id] = {sum: ""}; continue; }
-      cache[id] = _analyzeSplits(await resp.json());
+      const a = _analyzeSplits(await resp.json());
+      // Interval session? Pull laps for the true rep structure (one extra call)
+      if (a.intervals && calls < 20) {
+        try {
+          const lr = await fetch(`${STRAVA_API}/activities/${id}/laps`, {headers: {Authorization: "Bearer " + token}, signal: AbortSignal.timeout(15000)});
+          calls++;
+          if (lr.ok) {
+            const reps = _analyzeLaps(await lr.json());
+            if (reps) {
+              a.reps = reps;
+              a.sum = a.sum.replace(/⚡[^·]*/,
+                `⚡ ${reps.n}×${reps.dLbl} reps @ ${_fmtSecKm(reps.avg)}/km (±${reps.sd}s${reps.sd <= 4 ? " — metronomic 👏" : reps.sd <= 8 ? " — solid control" : " — uneven, start steadier"}) `);
+            }
+          }
+        } catch(e){}
+      }
+      cache[id] = a;
       await new Promise(res => setTimeout(res, 150));
     } catch(e) { break; }
   }
@@ -1893,11 +1960,13 @@ function _dayMeta(run, cache) {
     fast:      entries.reduce((s,e) => s + (e.fast || 0), 0),
     mp:        entries.reduce((s,e) => s + (e.mp   || 0), 0),
     intervals: entries.some(e => e.intervals),
+    reps:      entries.map(e => e.reps).find(r => r) || null,
   };
 }
 
-// Title that reflects what the splits actually show
+// Title that reflects what the splits/laps actually show
 function _smartTitle(run, meta) {
+  if (meta && meta.reps)                    return `Intervals ${meta.reps.n}×${meta.reps.dLbl}`;
   if (meta && meta.intervals)               return `Intervals (${meta.fast} fast km)`;
   if (meta && run.km >= 15 && meta.mp >= 3) return `Long Run · ${meta.mp}km @ MP`;
   return _sessionTitle(run.pace_sec, run.km);
@@ -2293,7 +2362,16 @@ function renderInsightPanel() {
     <div class="insight-rec">
       <span class="rec-icon">💡</span>
       <span>${rec}</span>
-    </div>`;
+    </div>
+    ${(() => {
+      // Surface the splits analysis (📊 line from the synced notes) right in the insight panel
+      const m = (recentLog.notes || "").match(/📊 ([^\n]*)/);
+      if (!m) return "";
+      let extra = "";
+      const dm = m[1].match(/HR drift \+?(-?[\d.]+)%/);
+      if (dm && parseFloat(dm[1]) > 8) extra = `<div class="insight-rec" style="padding-top:0"><span class="rec-icon">❤️</span><span>HR drifted ${dm[1]}% in the second half — a sign of fatigue or under-fuelling. Easy day tomorrow and fuel earlier in long runs.</span></div>`;
+      return `<div class="insight-rec" style="padding-top:0;border-top:1px dashed var(--border)"><span class="rec-icon">📊</span><span>${m[1]}</span></div>` + extra;
+    })()}`;
 }
 
 // ── QUICK ACTIONS (home page) ─────────────────────────────────────────────────
@@ -2344,8 +2422,41 @@ function renderTracker() {
   renderScoreCards(scores);
   renderVolumeChart();
   renderPaceTrend();
+  renderZoneMix();
   renderKeyWorkoutStats();
   renderGoalTracking(scores);
+}
+
+// Aggregate zone km across all analysed Strava runs → stacked bar + MP total
+function renderZoneMix() {
+  const el = document.getElementById('zoneMix');
+  if (!el) return;
+  const cache = _analysisCache();
+  const tot = {z5: 0, z4: 0, mp: 0, ez: 0, rec: 0};
+  Object.values(cache).forEach(a => {
+    if (a && a.zones) Object.keys(tot).forEach(k => tot[k] += a.zones[k] || 0);
+  });
+  const total = Object.values(tot).reduce((a, b) => a + b, 0);
+  if (!total) { el.innerHTML = '<p style="font-size:12px;color:#94a3b8">Sync Strava to build your zone profile — splits get analysed automatically.</p>'; return; }
+  const Z = [
+    {k: 'z5',  lbl: 'Z5 <3:50',        c: '#ef4444'},
+    {k: 'z4',  lbl: 'Z4 3:50–4:05',    c: '#f97316'},
+    {k: 'mp',  lbl: 'MP 4:05–4:25',    c: '#8b5cf6'},
+    {k: 'ez',  lbl: 'Easy 4:25–5:10',  c: '#10b981'},
+    {k: 'rec', lbl: 'Rec >5:10',       c: '#94a3b8'},
+  ];
+  const bar = Z.map(z => tot[z.k] ? `<div style="width:${(tot[z.k] / total * 100).toFixed(1)}%;background:${z.c}" title="${z.lbl}: ${tot[z.k]}km"></div>` : '').join('');
+  const legend = Z.map(z => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text2);font-weight:600"><span style="width:9px;height:9px;border-radius:3px;background:${z.c};display:inline-block"></span>${z.lbl} · ${tot[z.k]}km (${Math.round(tot[z.k] / total * 100)}%)</span>`).join('');
+  const easyShare = Math.round((tot.ez + tot.rec) / total * 100);
+  const verdict = easyShare >= 72
+    ? `✅ ${easyShare}% easy — healthy 80/20-style polarisation for marathon training.`
+    : easyShare >= 60
+      ? `⚠️ ${easyShare}% easy — slightly intensity-heavy; keep the easy days genuinely easy.`
+      : `🛑 only ${easyShare}% easy — too much intensity for a marathon block; more Z1–Z2 running.`;
+  el.innerHTML = `
+    <div style="display:flex;height:14px;border-radius:100px;overflow:hidden;margin-bottom:10px">${bar}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">${legend}</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.5">${verdict}</div>`;
 }
 
 // Compute readiness, fatigue, guidance, and supporting metrics.
@@ -2763,6 +2874,12 @@ function renderGoalTracking(scores) {
       <div class="goal-label">Key session attendance</div>
       <div class="goal-val">${keyAtt != null ? keyAtt + '%' : '—'}</div>
       ${tag(keyAtt, 80, 60)}
+    </div>
+    <div class="goal-row">
+      <div class="goal-icon">🎯</div>
+      <div class="goal-label">Marathon-pace km this block <span style="font-weight:400;color:var(--muted)">(aim ~40+ before taper)</span></div>
+      <div class="goal-val">${(() => { let mp = 0; Object.values(_analysisCache()).forEach(a => { if (a) mp += a.mp || 0; }); return mp + ' km'; })()}</div>
+      ${(() => { let mp = 0; Object.values(_analysisCache()).forEach(a => { if (a) mp += a.mp || 0; }); return mp >= 40 ? '<div class="goal-tag green">on target</div>' : mp >= 20 ? '<div class="goal-tag amber">building</div>' : '<div class="goal-tag grey">early days</div>'; })()}
     </div>`;
 }
 
