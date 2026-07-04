@@ -1885,10 +1885,43 @@ function _analyzeSplits(d) {
     const ef2 = ef(paces.slice(half),    hrs.slice(half));
     if (ef1 > 0 && ef2 > 0) drift = Math.round((ef1 / ef2 - 1) * 1000) / 10;
   }
+  // Long-run structure: find contiguous blocks of MP-or-faster kms (quality work
+  // embedded in a long run — e.g. "last 6km @ MP" or "3×4km MP blocks")
+  let lr = null;
+  if (paces.length >= 12 && !intervals) {
+    const blocks = [];
+    let s = -1;
+    for (let i = 0; i <= paces.length; i++) {
+      const q = i < paces.length && paces[i] <= MP_HI;
+      if (q && s < 0) s = i;
+      if (!q && s >= 0) {
+        const len = i - s;
+        if (len >= 2) {
+          const avg = paces.slice(s, i).reduce((a, b) => a + b, 0) / len;
+          blocks.push({start: s, len, avg: Math.round(avg), atEnd: i === paces.length});
+        }
+        s = -1;
+      }
+    }
+    const last = blocks[blocks.length - 1];
+    if (blocks.length >= 2) {          // repeated MP blocks (e.g. 3×4km) beat "finish"
+      lr = {type: "blocks", lens: blocks.map(b => b.len), avg: Math.round(blocks.reduce((a, b) => a + b.avg * b.len, 0) / blocks.reduce((a, b) => a + b.len, 0))};
+    } else if (last && last.atEnd && last.len >= 3) {
+      lr = {type: "finish", len: last.len, avg: last.avg};
+    } else if (blocks.length === 1 && blocks[0].len >= 3) {
+      lr = {type: "block", len: blocks[0].len, avg: blocks[0].avg};
+    }
+  }
   const parts = [];
   if (intervals) parts.push(`⚡ interval session — ${fast} fast km, best ${_fmtSecKm(best)}/km`);
   else parts.push(`best km ${_fmtSecKm(best)}/km`);
-  if (mp >= 2) parts.push(`🎯 ${mp}km in MP band (4:05–4:25)`);
+  if (lr) {
+    if (lr.type === "finish") parts.push(`🏁 fast finish — last ${lr.len}km @ ${_fmtSecKm(lr.avg)}/km${lr.avg <= MP_HI && lr.avg >= MP_LO ? " (MP!)" : ""}`);
+    else if (lr.type === "blocks") parts.push(`🎯 MP blocks ${lr.lens.join("+")}km @ ${_fmtSecKm(lr.avg)}/km`);
+    else parts.push(`🎯 ${lr.len}km MP block mid-run @ ${_fmtSecKm(lr.avg)}/km`);
+  } else if (mp >= 2) {
+    parts.push(`🎯 ${mp}km in MP band (4:05–4:25)`);
+  }
   if (paces.length >= 12) {  // pacing verdict for long runs
     const half = Math.floor(paces.length / 2);
     const a1 = paces.slice(0, half).reduce((x,y)=>x+y, 0) / half;
@@ -1897,7 +1930,7 @@ function _analyzeSplits(d) {
     parts.push(diff <= 0 ? `negative split (${diff}s/km) 👏` : `positive split (+${diff}s/km)`);
   }
   if (drift !== null) parts.push(`❤️ HR drift ${drift >= 0 ? "+" : ""}${drift}%${drift < 5 ? " 👍" : drift > 8 ? " — big fade, watch fatigue" : ""}`);
-  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best), drift, zones};
+  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best), drift, zones, lr};
 }
 
 // From the laps endpoint: true rep structure for interval sessions
@@ -1961,6 +1994,7 @@ function _dayMeta(run, cache) {
     mp:        entries.reduce((s,e) => s + (e.mp   || 0), 0),
     intervals: entries.some(e => e.intervals),
     reps:      entries.map(e => e.reps).find(r => r) || null,
+    lr:        entries.map(e => e.lr).find(l => l) || null,
   };
 }
 
@@ -1968,6 +2002,11 @@ function _dayMeta(run, cache) {
 function _smartTitle(run, meta) {
   if (meta && meta.reps)                    return `Intervals ${meta.reps.n}×${meta.reps.dLbl}`;
   if (meta && meta.intervals)               return `Intervals (${meta.fast} fast km)`;
+  if (meta && meta.lr && run.km >= 14) {
+    if (meta.lr.type === "finish") return `Long Run · ${meta.lr.len}km MP finish`;
+    if (meta.lr.type === "blocks") return `Long Run · MP ${meta.lr.lens.join("+")}km`;
+    return `Long Run · ${meta.lr.len}km @ MP`;
+  }
   if (meta && run.km >= 15 && meta.mp >= 3) return `Long Run · ${meta.mp}km @ MP`;
   return _sessionTitle(run.pace_sec, run.km);
 }
