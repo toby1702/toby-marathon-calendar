@@ -939,23 +939,51 @@ function _collectShareState() {
   } catch(e){}
   return data;
 }
+// Any Strava-connected device is a full editor-publisher (Strava = the login).
+function canPublish() { return canEdit() || isShareOwner(); }
+function _stateSig(data) {
+  const s = JSON.stringify(data);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h + ":" + s.length;
+}
 let _pubTimer = null;
 function schedulePublish() {
-  if (typeof isShareOwner !== "function" || !isShareOwner()) return;
+  if (typeof canPublish !== "function" || !canPublish()) return;
   clearTimeout(_pubTimer);
   _pubTimer = setTimeout(publishShareState, 1500);
 }
-async function publishShareState() {
-  if (!isShareOwner()) return;
+async function publishShareState(force) {
+  if (!canPublish()) return;
+  _pubTimer = null;
   try {
-    await fetch(SHARE_URL, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({updated: Date.now(), s: _collectShareState()}),
-    });
+    const data = _collectShareState();
+    const sig = _stateSig(data);
+    if (force || localStorage.getItem("state_pub_sig") !== sig) {
+      const ts = Date.now();
+      const r = await fetch(SHARE_URL, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({updated: ts, s: data}),
+      });
+      if (r.ok) {
+        localStorage.setItem("state_pub_sig", sig);
+        localStorage.setItem("last_pub_ts", String(ts));
+      }
+    }
     await publishICSFeed();  // keep the subscribed-calendar feed current too
   } catch(e){}
 }
+// If the tab closes during the 1.5s publish debounce, flush best-effort so
+// last-second edits are never lost (the cause of the stale-calendar bug).
+window.addEventListener("pagehide", () => {
+  if (_pubTimer && canPublish() && navigator.sendBeacon) {
+    try {
+      navigator.sendBeacon(SHARE_URL,
+        new Blob([JSON.stringify({updated: Date.now(), s: _collectShareState()})], {type: "application/json"}));
+    } catch(e){}
+  }
+});
 let _lastAppliedShare = 0;
 function _timeAgo(ts) {
   const m = Math.round((Date.now() - ts) / 60000);
@@ -978,9 +1006,38 @@ function _showViewerBanner(updatedTs) {
   b.innerHTML = `👀 Live view of Toby's training — synced from Strava · progress updated <strong>${_timeAgo(updatedTs)}</strong>`;
   document.body.classList.add("viewer");  // hides editing/sync controls for a clean read-only view
 }
+function _applyRemoteState(state) {
+  const toRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (SHARE_PREFIXES.some(p => k.startsWith(p)) || SHARE_SINGLES.includes(k)) toRemove.push(k);
+  }
+  toRemove.forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
+  Object.entries(state).forEach(([k, v]) => { try { localStorage.setItem(k, v); } catch(e){} });
+  renderCalendar(); updateStats(); updateLastSync(); renderHome();
+  if (currentPage === "tracker") renderTracker();
+}
 async function initLiveShare() {
-  if (isShareOwner()) { publishShareState(); return; }
-  // Viewer: pull the owner's latest published state and display it
+  if (canPublish()) {
+    // Editor device: pull first if another of your devices published more recently,
+    // so laptop and phone converge instead of overwriting each other.
+    try {
+      const r = await fetch(SHARE_URL, {signal: AbortSignal.timeout(8000)});
+      if (r.ok) {
+        const d = await r.json();
+        const lastPub = parseInt(localStorage.getItem("last_pub_ts") || "0");
+        if (d && d.s && Object.keys(d.s).length && d.updated && d.updated > lastPub) {
+          _applyRemoteState(d.s);
+          localStorage.setItem("last_pub_ts", String(d.updated));
+          localStorage.setItem("state_pub_sig", _stateSig(_collectShareState()));
+          showToast("⤵ Pulled latest changes from your other device");
+        }
+      }
+    } catch(e){}
+    publishShareState();
+    return;
+  }
+  // Viewer: pull the latest published state and display it
   try {
     const r = await fetch(SHARE_URL, {signal: AbortSignal.timeout(8000)});
     if (!r.ok) return;
@@ -990,19 +1047,11 @@ async function initLiveShare() {
     _showViewerBanner(d.updated || Date.now());
     if (d.updated && d.updated === _lastAppliedShare) return;  // nothing new
     _lastAppliedShare = d.updated || 0;
-    const toRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (SHARE_PREFIXES.some(p => k.startsWith(p)) || SHARE_SINGLES.includes(k)) toRemove.push(k);
-    }
-    toRemove.forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
-    Object.entries(state).forEach(([k, v]) => { try { localStorage.setItem(k, v); } catch(e){} });
-    renderCalendar(); updateStats(); updateLastSync(); renderHome();
-    if (currentPage === "tracker") renderTracker();
+    _applyRemoteState(state);
   } catch(e){}
 }
 // Viewers auto-refresh every 60s so an open tab tracks Toby's progress live
-setInterval(() => { if (!isShareOwner()) initLiveShare(); }, 60000);
+setInterval(() => { if (!canPublish()) initLiveShare(); }, 60000);
 
 // Get the current (possibly overridden) state of a session
 function getSession(orig) {
@@ -1691,7 +1740,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeSubscri
 // SEQUENCE derives from time so every publish is seen as "newer".
 const ICS_FEED_URL = "https://getpantry.cloud/apiv1/pantry/7a88701a-23cb-4c5c-8dab-4cc462c66736/basket/ics";
 async function publishICSFeed(force) {
-  if (!isShareOwner()) return;
+  if (!canPublish()) return;
   try {
     // Change detection: hash the calendar content (minus volatile timestamps) so we
     // only POST when something actually changed — avoids rate-limit stalls.
@@ -2991,7 +3040,7 @@ initLiveShare();         // owner publishes progress; viewers pull it
 // so viewers stay fresh even if you never press the sync button.
 (function autoDailySync() {
   const today = dateStr(new Date());
-  if (isShareOwner() && _stravaAuthData() && ls("strava_auto_sync_date") !== today) {
+  if (canEdit() && ls("strava_auto_sync_date") !== today) {
     lsSet("strava_auto_sync_date", today);
     setTimeout(syncFromStrava, 1500);
   }
