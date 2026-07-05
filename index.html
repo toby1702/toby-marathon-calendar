@@ -278,11 +278,11 @@ textarea{resize:vertical;min-height:58px}
   border-bottom:1.5px solid #fdba74;color:#9a3412;
   padding:8px 20px;font-size:12.5px;font-weight:600;text-align:center;
 }
-/* Viewers get a clean read-only look: no sync internals, no editing controls */
-body.viewer .sync-wrap,
+/* Viewers get a clean read-only look: no editing controls. The Strava Sync
+   panel stays visible — it's how the owner logs in on a new device. */
 body.viewer .library-wrap,
 body.viewer .btn-reorg,
-body.viewer #qaLog, body.viewer #qaSync, body.viewer #qaReorg,
+body.viewer #qaLog, body.viewer #qaReorg,
 body.viewer .legend-hint{display:none!important}
 
 /* ── UI POLISH ──────────────────────────────────────────────────────────── */
@@ -916,6 +916,18 @@ const SHARE_URL = "https://getpantry.cloud/apiv1/pantry/7a88701a-23cb-4c5c-8dab-
 const SHARE_PREFIXES = ["p_","l_","lock_","wgoal_"];
 const SHARE_SINGLES  = ["strava_extras","strava_last_sync"];
 function isShareOwner()   { try { return localStorage.getItem("share_owner") === "1"; } catch(e){ return false; } }
+
+// ── EDIT GATING ──────────────────────────────────────────────────────────────
+// Only a browser connected to Strava (the owner's API login) may change the plan.
+// Everyone else is view-only: no drags, no modal edits, no reorganising.
+function canEdit() { return !!_stravaAuthData(); }
+function _editBlocked() {
+  showToast("🔒 View-only — connect Strava in the sync panel to edit this plan");
+  return false;
+}
+function refreshEditMode() {
+  document.body.classList.toggle("viewer", !canEdit());
+}
 function _collectShareState() {
   const data = {};
   try {
@@ -1125,6 +1137,7 @@ function renderLibrary() {
 }
 
 function applyLibraryPreset(origId, preset) {
+  if (!canEdit()) return _editBlocked();
   savePlanOverride(origId, {t: preset.t, km: preset.km, pace: preset.pace, desc: preset.desc});
   renderCalendar();
   updateStats();
@@ -1133,6 +1146,7 @@ function applyLibraryPreset(origId, preset) {
 
 function toggleLock() {
   if (!currentId) return;
+  if (!canEdit()) return _editBlocked();
   const s = getSession(ORIG.find(o => o.id === currentId));
   const nowLocked = !isLocked(s.id);
   setLock(s.id, nowLocked);
@@ -1145,6 +1159,7 @@ function toggleLock() {
 
 // ── REORGANISE WEEK ──────────────────────────────────────────────────────────
 function reorganiseWeek(weekStartStr) {
+  if (!canEdit()) return _editBlocked();
   const weekStart   = parseDate(weekStartStr);
   const weeksToRace = Math.round((new Date("2026-08-30T07:00:00") - weekStart) / (7*86400000));
   const tKey        = Math.min(6, Math.max(1, weeksToRace));
@@ -1255,6 +1270,7 @@ function reorganiseWeek(weekStartStr) {
 }
 
 function rescheduleSession(draggedId, targetDate, dateMap) {
+  if (!canEdit()) return _editBlocked();
   const draggedOrig = ORIG.find(o => o.id === draggedId);
   if (!draggedOrig) return;
   const dragged  = getSession(draggedOrig);
@@ -1366,9 +1382,9 @@ function renderMonth(root, year, month, dateMap) {
         }
 
         chip.onclick = () => openModal(s.id);
-        chip.draggable = !locked;
+        chip.draggable = !locked && canEdit();
         chip.addEventListener("dragstart", e => {
-          if (locked) { e.preventDefault(); return; }
+          if (locked || !canEdit()) { e.preventDefault(); return; }
           e.stopPropagation();
           e.dataTransfer.setData("text/plain", JSON.stringify({type:"chip", id: s.id}));
           e.dataTransfer.effectAllowed = "move";
@@ -1395,6 +1411,7 @@ function renderMonth(root, year, month, dateMap) {
         e.preventDefault();
         cell.classList.remove("drag-over");
         if (!inMonth) return;
+        if (!canEdit()) { _editBlocked(); return; }
         let data;
         try { data = JSON.parse(e.dataTransfer.getData("text/plain")); } catch(err) { return; }
         if (data.type === "chip") {
@@ -1483,6 +1500,17 @@ function openModal(origId) {
   lockBtn.textContent = lockedNow ? "🔓 Unlock" : "🔒 Lock";
   lockBtn.classList.toggle("active", lockedNow);
 
+  // View-only visitors can inspect sessions but not change them
+  const ro = !canEdit();
+  ["mSaveBtn","mDoneBtn","mResetBtn","mLockBtn"].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = ro ? "none" : (id === "mResetBtn" ? (s.edited ? "block" : "none") : "");
+  });
+  ["pDate","pTitle","pKm","pPace","pDesc","lActualKm","lActualPace","lNotes"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = ro;
+  });
+
   // Auto-open Log tab for past sessions — editing the plan on a past run is rare
   const isPastSession = s.date < dateStr(new Date());
   switchTab(isPastSession && s.cat !== 'rest' ? "log" : "plan");
@@ -1507,6 +1535,7 @@ function closeModal() {
 
 function saveModal() {
   if (!currentId) return;
+  if (!canEdit()) return _editBlocked();
   if (currentTab === "plan") {
     const orig = ORIG.find(o => o.id === currentId);
     savePlanOverride(currentId, {
@@ -1535,6 +1564,7 @@ function saveModal() {
 
 function toggleDone() {
   if (!currentId) return;
+  if (!canEdit()) return _editBlocked();
   const s   = getSession(ORIG.find(o => o.id === currentId));
   const log = getLog(s.date);
   // Save any log edits first — use explicit empty-string check so fields can be cleared
@@ -1555,6 +1585,7 @@ function toggleDone() {
 
 function resetSession() {
   if (!currentId) return;
+  if (!canEdit()) return _editBlocked();
   if (!confirm("Reset this session back to the original plan?")) return;
   clearPlanOverride(currentId);
   closeModal();
@@ -1773,6 +1804,8 @@ async function handleStravaRedirect() {
       athlete,
     }));
     checkStravaStatus();
+    refreshEditMode();                // Strava connected → editing unlocked
+    renderCalendar(); renderHome();
     showToast(`Connected to Strava${athlete ? " as " + athlete : ""} ✓ — syncing runs…`);
     setTimeout(syncFromStrava, 800);  // pull runs immediately after connecting
   } catch (err) {
@@ -2695,6 +2728,7 @@ function renderVolumeChart() {
 
 // Replace the planned km display in a row with an inline input.
 function openWeekGoalEdit(w, currentGoal, origPlanned) {
+  if (!canEdit()) return _editBlocked();
   const row = document.getElementById(`volrow-${w}`);
   if (!row) return;
   const barRow = row.querySelector('.vol-bar-row');
@@ -2939,6 +2973,7 @@ if (new URLSearchParams(location.search).get("owner") === "1") {
   showToast("This device now publishes your progress to viewers ✓");
 }
 checkStravaStatus();     // green dot if already connected
+refreshEditMode();       // editing only with Strava connected — everyone else is view-only
 handleStravaRedirect();  // completes OAuth if Strava just sent us back with ?code=…
 initLiveShare();         // owner publishes progress; viewers pull it
 // Owner convenience: auto-sync from Strava once per day on page load,
