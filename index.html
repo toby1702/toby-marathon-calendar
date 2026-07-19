@@ -2,13 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Toby — Marathon Training Calendar</title>
 <meta name="description" content="Toby's live training calendar for the Sydney Marathon, 30 August 2026 — goal: sub 3:00. Synced from Strava.">
 <meta property="og:title" content="Toby's Marathon Training — Sub 3:00 🏃">
 <meta property="og:description" content="Live training progress for the Sydney Marathon (30 Aug 2026), synced from Strava. Follow along!">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏃</text></svg>">
+<!-- ── INSTALLABLE APP (PWA) ─────────────────────────────────────────────── -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0d1f3c">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Marathon">
+<meta name="application-name" content="Marathon">
 <style>
 /* ── DESIGN TOKENS ──────────────────────────────────────────────────────── */
 :root {
@@ -460,9 +469,78 @@ body{background:#f6f8fb}
 .goal-tag.amber{background:#fef3c7;color:#92400e}
 .goal-tag.red  {background:#fee2e2;color:#9f1239}
 .goal-tag.grey {background:#f1f5f9;color:#94a3b8}
+
+/* ── APP SHELL · BOTTOM TAB BAR + PWA MOBILE ────────────────────────────── */
+.tabbar{display:none}
+/* status-bar safe area when launched as an installed iOS app (translucent bar) */
+html.standalone .topbar{padding-top:calc(12px + env(safe-area-inset-top))}
+html.standalone .home-hero{padding-top:14px}
+
+@media (max-width: 820px){
+  /* Native-style bottom tab bar replaces the top tab strip */
+  .page-nav{display:none}
+  .tabbar{
+    display:flex;position:fixed;left:0;right:0;bottom:0;z-index:200;
+    background:rgba(255,255,255,.90);
+    -webkit-backdrop-filter:saturate(180%) blur(16px);backdrop-filter:saturate(180%) blur(16px);
+    border-top:1px solid var(--border);
+    padding-bottom:env(safe-area-inset-bottom);
+    box-shadow:0 -6px 24px rgba(13,31,60,.08);
+  }
+  .tabbar-btn{
+    flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+    padding:9px 4px 8px;background:transparent;border:none;cursor:pointer;
+    color:var(--muted);font-weight:700;font-size:10.5px;letter-spacing:.2px;
+    transition:color .15s;-webkit-tap-highlight-color:transparent;
+  }
+  .tabbar-btn .tb-ico{font-size:21px;line-height:1;filter:grayscale(40%);opacity:.65;transition:transform .18s,opacity .15s,filter .15s}
+  .tabbar-btn.active{color:var(--blue)}
+  .tabbar-btn.active .tb-ico{filter:none;opacity:1;transform:translateY(-1px) scale(1.06)}
+
+  /* clear the fixed bar so nothing hides behind it */
+  .bottom-pad{height:calc(78px + env(safe-area-inset-bottom))}
+
+  /* compact app header */
+  .topbar{padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top))}
+  .topbar-left h1{font-size:15px}
+  .topbar-left p{display:none}
+  .topbar .btn-export{display:none}        /* declutter — calendar/CSV live in Quick Actions */
+  .topbar-right{gap:6px}
+
+  /* bottom-sheet modal — slides up from the bottom like a native sheet */
+  .modal-bg{align-items:flex-end;padding:0}
+  .modal{max-width:100%;width:100%;border-radius:20px 20px 0 0;max-height:92vh;position:relative;
+    animation:sheetUp .28s cubic-bezier(.4,0,.2,1)}
+  .modal::before{content:"";position:absolute;top:7px;left:50%;transform:translateX(-50%);
+    width:38px;height:4px;border-radius:100px;background:#d7dde8;z-index:5}
+  .modal-tabs{padding-top:15px}
+  .modal-actions{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  @keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+
+  /* comfortable touch targets */
+  .qa-btn{min-height:66px}
+  .mbtn{padding:11px 16px}
+  .tab-btn{padding:14px 10px}
+}
 </style>
 </head>
 <body>
+
+<script>
+// ── INSTALLABLE APP: standalone flag + service worker (safe for live data) ──
+(function () {
+  try {
+    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+      document.documentElement.classList.add('standalone');
+    }
+  } catch (e) {}
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+    });
+  }
+})();
+</script>
 
 <div class="topbar">
   <div class="topbar-left">
@@ -512,6 +590,14 @@ body{background:#f6f8fb}
   <div class="home-section"><div class="section-hdr" id="thisWeekHdr">This Week</div></div>
   <div class="week-cards-scroll" id="thisWeekCards"></div>
 
+  <!-- Training balance (speed / marathon-pace / junk / easy) from Strava splits -->
+  <div class="home-section" style="margin-top:14px"><div class="section-hdr">⚖️ Training Balance <span style="font-weight:500;color:var(--muted);font-size:11px">· where your km actually go</span></div></div>
+  <div id="homeBalance" style="margin:0 16px"></div>
+
+  <!-- Marathon-pace & easy trackers — am I doing enough? -->
+  <div class="home-section" style="margin-top:14px"><div class="section-hdr">🎯 Pace Trackers <span style="font-weight:500;color:var(--muted);font-size:11px">· volume, pace &amp; heart rate</span></div></div>
+  <div id="homeMpEasy" style="margin:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px"></div>
+
   <!-- Post-run insight (only visible when a recent run is logged) -->
   <div id="homeInsightPanel" class="insight-panel" style="display:none"></div>
 
@@ -532,6 +618,11 @@ body{background:#f6f8fb}
       <span class="qa-icon">↺</span>
       <span class="qa-label">Reorganise Week</span>
       <span class="qa-sub">Smart rescheduling</span>
+    </button>
+    <button class="qa-btn" onclick="openSubscribeModal()">
+      <span class="qa-icon">📆</span>
+      <span class="qa-label">Add to Calendar</span>
+      <span class="qa-sub">Apple / Google · auto-updates</span>
     </button>
     <button class="qa-btn" onclick="exportCSV()">
       <span class="qa-icon">📊</span>
@@ -706,6 +797,7 @@ body{background:#f6f8fb}
     <div class="modal-tabs">
       <button class="tab-btn active" id="tabPlanBtn" onclick="switchTab('plan')">✏️ Edit Plan</button>
       <button class="tab-btn" id="tabLogBtn"  onclick="switchTab('log')">📝 Log Run</button>
+      <button class="tab-btn" id="tabSplitsBtn" onclick="switchTab('splits')" style="display:none">📊 Splits</button>
     </div>
 
     <!-- PLAN TAB -->
@@ -736,6 +828,13 @@ body{background:#f6f8fb}
       <textarea id="lNotes" placeholder="Notes…"></textarea>
     </div>
 
+    <!-- SPLITS TAB (Strava run details) -->
+    <div class="tab-content hidden" id="tabSplits">
+      <div class="modal-title" id="mTitleS">—</div>
+      <div class="modal-date-display" id="mDateS">—</div>
+      <div id="splitsBody" style="max-height:54vh;overflow-y:auto;margin-top:4px"></div>
+    </div>
+
     <div class="modal-actions">
       <button class="mbtn mbtn-primary" id="mSaveBtn" onclick="saveModal()">Save Changes</button>
       <button class="mbtn mbtn-done" id="mDoneBtn" onclick="toggleDone()">Mark Done ✓</button>
@@ -747,6 +846,13 @@ body{background:#f6f8fb}
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ── APP BOTTOM TAB BAR (mobile) ─────────────────────────────────────── -->
+<nav class="tabbar" id="tabbar">
+  <button class="tabbar-btn active" data-page="home" onclick="showPage('home')"><span class="tb-ico">🏠</span><span class="tb-lbl">Home</span></button>
+  <button class="tabbar-btn" data-page="plan" onclick="showPage('plan')"><span class="tb-ico">📅</span><span class="tb-lbl">Plan</span></button>
+  <button class="tabbar-btn" data-page="tracker" onclick="showPage('tracker')"><span class="tb-ico">📈</span><span class="tb-lbl">Tracker</span></button>
+</nav>
 
 <!-- SUBSCRIBE MODAL -->
 <div class="modal-bg" id="subModalBg">
@@ -914,7 +1020,7 @@ function lsSet(k, v)   { try { localStorage.setItem(k, v); } catch(e){} schedule
 // viewers see live progress without needing anything set up. No login required.
 const SHARE_URL = "https://getpantry.cloud/apiv1/pantry/7a88701a-23cb-4c5c-8dab-4cc462c66736/basket/state";
 const SHARE_PREFIXES = ["p_","l_","lock_","wgoal_"];
-const SHARE_SINGLES  = ["strava_extras","strava_last_sync"];
+const SHARE_SINGLES  = ["strava_extras","strava_last_sync","strava_day_ids","strava_analysis"];
 function isShareOwner()   { try { return localStorage.getItem("share_owner") === "1"; } catch(e){ return false; } }
 
 // ── EDIT GATING ──────────────────────────────────────────────────────────────
@@ -1506,13 +1612,27 @@ let currentId = null;
 let currentTab = "plan";
 
 function openModal(origId) {
-  // Strava-extra sessions aren't in ORIG — show a simple info toast instead
+  // Strava-extra sessions aren't in ORIG — open a splits-only detail view (or toast if no data)
   if (origId.startsWith("strava-")) {
     const extras = JSON.parse(localStorage.getItem("strava_extras") || "[]");
     const e = extras.find(x => x.id === origId);
-    if (e) showToast(`🟠 ${e.date} · ${e.km}km @ ${e.pace} · ${e.t}`);
+    if (!e) return;
+    const html = _splitsHtmlForDate(e.date);
+    if (!html) { showToast(`🟠 ${e.date} · ${e.km}km @ ${e.pace} · ${e.t}`); return; }
+    currentId = null;
+    document.getElementById("tabPlanBtn").style.display = "none";
+    document.getElementById("tabLogBtn").style.display  = "none";
+    document.getElementById("tabSplitsBtn").style.display = "";
+    document.getElementById("mTitleS").textContent = e.t || "Strava Run";
+    document.getElementById("mDateS").textContent  = `${fmtDate(e.date)} · ${e.km}km @ ${e.pace}`;
+    document.getElementById("splitsBody").innerHTML = html;
+    switchTab("splits");
+    document.getElementById("modalBg").classList.add("open");
     return;
   }
+  // Restore plan/log tabs (may have been hidden by a prior strava-extra view)
+  document.getElementById("tabPlanBtn").style.display = "";
+  document.getElementById("tabLogBtn").style.display  = "";
   currentId = origId;
   const orig = ORIG.find(o => o.id === origId);
   const s    = getSession(orig);
@@ -1549,20 +1669,27 @@ function openModal(origId) {
   lockBtn.textContent = lockedNow ? "🔓 Unlock" : "🔒 Lock";
   lockBtn.classList.toggle("active", lockedNow);
 
-  // View-only visitors can inspect sessions but not change them
+  // View-only visitors can inspect sessions but not change them (buttons via _syncModalButtons)
   const ro = !canEdit();
-  ["mSaveBtn","mDoneBtn","mResetBtn","mLockBtn"].forEach(id => {
-    const b = document.getElementById(id);
-    if (b) b.style.display = ro ? "none" : (id === "mResetBtn" ? (s.edited ? "block" : "none") : "");
-  });
   ["pDate","pTitle","pKm","pPace","pDesc","lActualKm","lActualPace","lNotes"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = ro;
   });
 
-  // Auto-open Log tab for past sessions — editing the plan on a past run is rare
+  // Splits tab: show when this day has analysed Strava split data
+  const spIds = (_dayIds()[s.date] || []);
+  const cacheA = _analysisCache();
+  const hasSplits = spIds.some(id => cacheA[id] && cacheA[id].sp && cacheA[id].sp.length);
+  document.getElementById("tabSplitsBtn").style.display = hasSplits ? "" : "none";
+  if (hasSplits) {
+    document.getElementById("mTitleS").textContent = s.t;
+    document.getElementById("mDateS").textContent  = fmtDate(s.date);
+    document.getElementById("splitsBody").innerHTML = _splitsHtmlForDate(s.date);
+  }
+
+  // Auto-open: Splits for runs with data, else Log for past sessions, else Plan
   const isPastSession = s.date < dateStr(new Date());
-  switchTab(isPastSession && s.cat !== 'rest' ? "log" : "plan");
+  switchTab(hasSplits ? "splits" : (isPastSession && s.cat !== 'rest' ? "log" : "plan"));
   document.getElementById("modalBg").classList.add("open");
 }
 
@@ -1570,11 +1697,16 @@ function switchTab(tab) {
   currentTab = tab;
   document.getElementById("tabPlan").classList.toggle("hidden", tab!=="plan");
   document.getElementById("tabLog").classList.toggle("hidden",  tab!=="log");
+  const spEl = document.getElementById("tabSplits");
+  if (spEl) spEl.classList.toggle("hidden", tab!=="splits");
   document.getElementById("tabPlanBtn").classList.toggle("active", tab==="plan");
   document.getElementById("tabLogBtn").classList.toggle("active",  tab==="log");
+  const spBtn = document.getElementById("tabSplitsBtn");
+  if (spBtn) spBtn.classList.toggle("active", tab==="splits");
   // Update Save button label to reflect which tab is active
   const saveBtn = document.getElementById("mSaveBtn");
   if (saveBtn) saveBtn.textContent = tab === "log" ? "Save Log" : "Update Plan";
+  _syncModalButtons();
 }
 
 function closeModal() {
@@ -1942,12 +2074,79 @@ async function _fetchStravaRuns(startISO, endISO) {
 const MP_LO = 4*60+5, MP_HI = 4*60+25;    // marathon-pace band around the 4:15 target
 const FAST_KM = 4*60;                     // km faster than 4:00 counts as interval-fast
 function _analysisCache() { try { return JSON.parse(localStorage.getItem("strava_analysis") || "{}"); } catch(e){ return {}; } }
+function _dayIds() { try { return JSON.parse(localStorage.getItem("strava_day_ids") || "{}"); } catch(e){ return {}; } }
 function _fmtSecKm(s) { return Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0"); }
+
+// ── SPLIT BUCKET TAXONOMY (Toby's exact definitions) ─────────────────────────
+// speed  : < 4:05/km (also whole-distance of interval/rep sessions)
+// mp     : 4:05–4:25/km (MP_LO..MP_HI) — race-specific work
+// junk   : 4:25–5:00/km — the "grey zone" (labelled 4:30–5:00 but includes the
+//          4:25–4:30 sliver so nothing is double-counted or lost)
+// easy   : > 5:00/km — genuine aerobic base
+const JUNK_HI = 5*60;               // 5:00/km — top of the junk band / start of easy
+function _bucketOf(paceSec) {
+  if (paceSec < MP_LO)      return "speed";   // < 4:05
+  if (paceSec <= MP_HI)     return "mp";      // 4:05–4:25
+  if (paceSec <= JUNK_HI)   return "junk";    // 4:25–5:00
+  return "easy";                              // > 5:00
+}
+const BUCKET_COLOR = { speed: "#ef4444", mp: "#8b5cf6", junk: "#f59e0b", easy: "#10b981" };
+
+// True if this analysis entry is a speed session whose ENTIRE distance counts as speed work.
+function _isSpeedSession(a) { return !!(a && (a.intervals || a.reps)); }
+
+// Aggregate the four training-balance buckets across every analysed run.
+// Returns {speed, mp, junk, easy, total} in km, plus MP/easy pace+HR accumulators.
+function _trainingBalance() {
+  const cache = _analysisCache();
+  const b = { speed: 0, mp: 0, junk: 0, easy: 0, total: 0 };
+  Object.values(cache).forEach(a => {
+    if (!a || !Array.isArray(a.sp) || !a.sp.length) return;
+    if (_isSpeedSession(a)) {
+      // Interval/rep session: whole activity distance counts as speed work.
+      b.speed += a.sp.length;
+      return;
+    }
+    a.sp.forEach(([p]) => {
+      const bk = _bucketOf(p);
+      b[bk]++;
+    });
+  });
+  b.total = b.speed + b.mp + b.junk + b.easy;
+  return b;
+}
+
+// Collect per-split pace/HR samples across non-speed runs for MP + easy trackers.
+// dateFilter(date) optional to restrict to a window. Returns {mpPaces,mpHrs,easyPaces,easyHrs}
+function _splitSamples(dateFilter) {
+  const cache = _analysisCache(), ids = _dayIds();
+  // Map activity id → its date (so we can time-window samples)
+  const idDate = {};
+  Object.entries(ids).forEach(([date, arr]) => (arr || []).forEach(id => { idDate[id] = date; }));
+  const out = { mpPaces: [], mpHrs: [], easyPaces: [], easyHrs: [] };
+  Object.entries(cache).forEach(([id, a]) => {
+    if (!a || !Array.isArray(a.sp) || _isSpeedSession(a)) return;
+    const date = idDate[id];
+    if (dateFilter && date && !dateFilter(date)) return;
+    if (dateFilter && !date) return;  // can't place it in time — skip when windowing
+    a.sp.forEach(([p, hr]) => {
+      const bk = _bucketOf(p);
+      if (bk === "mp")   { out.mpPaces.push(p);   if (hr) out.mpHrs.push(hr); }
+      if (bk === "easy") { out.easyPaces.push(p); if (hr) out.easyHrs.push(hr); }
+    });
+  });
+  return out;
+}
+function _avg(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+function _daysAgo(n) { return dateStr(new Date(Date.now() - n * 86400000)); }
 
 function _analyzeSplits(d) {
   const splits = (d.splits_metric || []).filter(s => s.distance > 500 && s.moving_time > 0);
   if (splits.length < 3) return {sum: ""};
   const paces = splits.map(s => s.moving_time / (s.distance / 1000));
+  // Raw per-split record: [paceSecRounded, hrRounded|0] — powers the Splits view
+  // and the Training Balance / MP / Easy trackers. Same >500m filter as above.
+  const sp = splits.map(s => [Math.round(s.moving_time / (s.distance / 1000)), s.average_heartrate ? Math.round(s.average_heartrate) : 0]);
   const fast  = paces.filter(p => p < FAST_KM).length;
   const mp    = paces.filter(p => p >= MP_LO && p <= MP_HI).length;
   const best  = Math.min(...paces);
@@ -2023,7 +2222,7 @@ function _analyzeSplits(d) {
     parts.push(diff <= 0 ? `negative split (${diff}s/km) 👏` : `positive split (+${diff}s/km)`);
   }
   if (drift !== null) parts.push(`❤️ HR drift ${drift >= 0 ? "+" : ""}${drift}%${drift < 5 ? " 👍" : drift > 8 ? " — big fade, watch fatigue" : ""}`);
-  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best), drift, zones, lr};
+  return {sum: parts.join(" · "), fast, mp, intervals, best: Math.round(best), drift, zones, lr, sp};
 }
 
 // From the laps endpoint: true rep structure for interval sessions
@@ -2042,9 +2241,9 @@ function _analyzeLaps(laps) {
 async function _analyzeNewRuns(runs, token) {
   const cache = _analysisCache();
   const todo = [];
-  // (Re-)analyse activities that are new OR were analysed before zones/HR-drift existed
+  // (Re-)analyse activities that are new OR were analysed before zones/HR-drift/raw-splits existed
   runs.forEach(r => (r.ids || []).forEach(id => {
-    if (!(id in cache) || (cache[id].sum && !cache[id].zones)) todo.push(id);
+    if (!(id in cache) || (cache[id].sum && !cache[id].zones) || (cache[id].sum && !cache[id].sp)) todo.push(id);
   }));
   let calls = 0;                                    // ≤20 API calls per sync, laps included
   for (const id of todo) {
@@ -2160,6 +2359,15 @@ async function syncFromStrava() {
       }
     });
 
+    // Persist a date → activity-ids map so the Splits view and viewers can look
+    // up which analysis entries belong to a given day. Merge with existing so
+    // days from earlier syncs survive even if outside this fetch window.
+    try {
+      const dayIds = JSON.parse(localStorage.getItem("strava_day_ids") || "{}");
+      Object.values(runMap).forEach(run => { if (run.ids && run.ids.length) dayIds[run.date] = run.ids.slice(); });
+      localStorage.setItem("strava_day_ids", JSON.stringify(dayIds));
+    } catch(e){}
+
     const plan = getCurrentPlan();
     const lines = []; let matched = 0, unplanned = 0;
 
@@ -2260,6 +2468,7 @@ function showPage(page) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
   document.getElementById('nav-' + page).classList.add('active');
+  document.querySelectorAll('.tabbar-btn').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   if (page === 'home')    renderHome();
   if (page === 'plan')    {
     renderCalendar(); updateStats();
@@ -2278,6 +2487,8 @@ function renderHome() {
   renderHomeStats();
   renderNextUp();
   renderThisWeek();
+  renderTrainingBalance();
+  renderMpEasyTrackers();
   renderInsightPanel();
 }
 
@@ -2355,8 +2566,7 @@ function renderThisWeek() {
     const done   = !!(log && log.done);
     const missed = isPast && !isT && !done && s.km > 0;
     const cls    = ['wdc', isT ? 'today' : '', done ? 'wdc-done' : '', missed ? 'missed' : ''].filter(Boolean).join(' ');
-    const canClick = !s.id.startsWith('strava-');
-    const clickAttr = canClick ? `onclick="openModal('${s.id}')"` : '';
+    const clickAttr = `onclick="openModal('${s.id}')"` ;
     const statusIcon  = done ? '✓' : missed ? '!' : isT ? '→' : '';
     const statusColor = done ? '#059669' : missed ? '#ef4444' : '#3b82f6';
     // Show actual km when done, planned km otherwise
@@ -2374,6 +2584,132 @@ function renderThisWeek() {
     </div>`;
   }
   container.innerHTML = html;
+}
+
+// ── TRAINING BALANCE + PACE TRACKERS (overview) ───────────────────────────────
+// Stacked speed / marathon-pace / junk / easy bar. Attribution rules (Toby's):
+//  • speed  = whole distance of any interval/rep session (+ any <4:05 split elsewhere)
+//  • mp     = only the km actually run at 4:05–4:25 (e.g. just the MP km of a long run)
+//  • junk   = 4:25–5:00 grey-zone km   • easy = >5:00 aerobic km
+function renderTrainingBalance() {
+  const el = document.getElementById('homeBalance');
+  if (!el) return;
+  const b = _trainingBalance();
+  const box = inner => `<div style="padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-sm)">${inner}</div>`;
+  if (!b.total) {
+    el.innerHTML = box('<div style="font-size:12px;color:var(--muted)">Sync Strava to see your speed / marathon-pace / junk / easy balance — every run’s splits are analysed automatically.</div>');
+    return;
+  }
+  const B = [
+    {k:'speed', lbl:'Speed'},
+    {k:'mp',    lbl:'Marathon Pace'},
+    {k:'junk',  lbl:'Junk'},
+    {k:'easy',  lbl:'Easy'},
+  ];
+  const pct = k => Math.round(b[k] / b.total * 100);
+  const bar = B.map(x => b[x.k] ? `<div style="width:${(b[x.k]/b.total*100).toFixed(1)}%;background:${BUCKET_COLOR[x.k]}" title="${x.lbl}: ${b[x.k]}km"></div>` : '').join('');
+  const legend = B.map(x => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);font-weight:600"><span style="width:10px;height:10px;border-radius:3px;background:${BUCKET_COLOR[x.k]};display:inline-block"></span>${x.lbl} · ${b[x.k]}km (${pct(x.k)}%)</span>`).join('');
+  const junkShare = pct('junk');
+  const verdict = junkShare >= 35
+    ? `🛑 ${junkShare}% junk (4:25–5:00) — a lot of grey-zone running. Run easy days genuinely slow (&gt;5:00) and keep quality at MP or faster.`
+    : junkShare >= 22
+      ? `⚠️ ${junkShare}% junk — some grey-zone drift. Make easy days easier so hard days stay hard.`
+      : `✅ Only ${junkShare}% junk — good separation between easy and quality work.`;
+  el.innerHTML = box(`
+    <div style="display:flex;height:16px;border-radius:100px;overflow:hidden;margin-bottom:11px;background:#eef1f6">${bar}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">${legend}</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.5">${verdict}</div>`);
+}
+
+// Marathon-pace and easy trackers: volume, time, avg pace, avg HR + last-4-week trend.
+function renderMpEasyTrackers() {
+  const el = document.getElementById('homeMpEasy');
+  if (!el) return;
+  const all = _splitSamples();
+  const rec = _splitSamples(d => d >= _daysAgo(28));
+  const card = (emoji, title, paces, hrs, recKm, accent, hint) => {
+    const base = `padding:13px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-sm);border-top:3px solid ${accent}`;
+    if (!paces.length) {
+      return `<div style="${base}"><div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px">${emoji} ${title}</div><div style="font-size:11px;color:var(--muted)">No data yet — sync Strava.</div></div>`;
+    }
+    const km = paces.length;
+    const tSec = paces.reduce((a, b) => a + b, 0);
+    const hh = Math.floor(tSec / 3600), mm = Math.round((tSec % 3600) / 60);
+    const timeLbl = hh ? `${hh}h${String(mm).padStart(2, '0')}` : `${mm} min`;
+    const avgP = _fmtSecKm(_avg(paces));
+    const avgH = hrs.length ? Math.round(_avg(hrs)) + ' bpm' : '—';
+    return `<div style="${base}">
+      <div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:8px">${emoji} ${title}</div>
+      <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px"><span style="font-size:24px;font-weight:800;color:${accent}">${km}</span><span style="font-size:11px;color:var(--muted)">km · ${timeLbl}</span></div>
+      <div style="font-size:11px;color:var(--text2);line-height:1.75">
+        <div>Avg pace <strong style="color:var(--text)">${avgP}/km</strong></div>
+        <div>Avg HR <strong style="color:var(--text)">${avgH}</strong></div>
+        <div>Last 4 wks <strong style="color:var(--text)">${recKm}km</strong></div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:7px;line-height:1.4">${hint}</div>
+    </div>`;
+  };
+  el.innerHTML =
+    card('🎯', 'Marathon Pace', all.mpPaces, all.mpHrs, rec.mpPaces.length, BUCKET_COLOR.mp,
+         'Only counts km actually run at 4:05–4:25 (e.g. the MP block of a long run).') +
+    card('🌿', 'Easy Work', all.easyPaces, all.easyHrs, rec.easyPaces.length, BUCKET_COLOR.easy,
+         'Aerobic km slower than 5:00. HR should sit comfortably in Z2.');
+}
+
+// Build the per-km Splits detail HTML for a given date (from Strava analysis cache).
+// Returns '' when there is no split data for that day.
+function _splitsHtmlForDate(date) {
+  const ids = (_dayIds()[date] || []);
+  const cache = _analysisCache();
+  const acts = ids.map(id => cache[id]).filter(a => a && Array.isArray(a.sp) && a.sp.length);
+  if (!acts.length) return '';
+  const chip = t => `<span style="display:inline-block;background:#f1f4f9;border-radius:100px;padding:3px 9px;font-size:10.5px;font-weight:600;color:var(--text2);margin:0 5px 5px 0">${t}</span>`;
+  const body = acts.map((a, ai) => {
+    const sp = a.sp;
+    const paces = sp.map(x => x[0]);
+    const minP = Math.min(...paces), maxP = Math.max(...paces);
+    const rows = sp.map((x, i) => {
+      const p = x[0], hr = x[1];
+      const bk = _bucketOf(p), c = BUCKET_COLOR[bk];
+      const w = 22 + 78 * (maxP > minP ? (maxP - p) / (maxP - minP) : 1); // faster km → longer bar
+      const mpBadge = bk === 'mp' ? `<span style="font-size:9px;font-weight:800;color:${BUCKET_COLOR.mp}">MP</span>` : (bk === 'speed' ? `<span style="font-size:9px;font-weight:800;color:${BUCKET_COLOR.speed}">⚡</span>` : '');
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+        <span style="width:22px;font-size:11px;color:var(--muted);text-align:right">${i + 1}</span>
+        <div style="flex:1;height:15px;background:#f1f4f9;border-radius:4px;overflow:hidden"><div style="width:${w.toFixed(0)}%;height:100%;background:${c}"></div></div>
+        <span style="width:50px;font-size:11px;font-weight:700;color:var(--text);text-align:right">${_fmtSecKm(p)}</span>
+        <span style="width:44px;font-size:11px;color:var(--text2);text-align:right">${hr ? hr + '♥' : '—'}</span>
+        <span style="width:22px;text-align:center">${mpBadge}</span>
+      </div>`;
+    }).join('');
+    const mpSplits = sp.filter(x => _bucketOf(x[0]) === 'mp');
+    const chips = [`${sp.length}km analysed`, `best ${_fmtSecKm(minP)}/km`];
+    if (mpSplits.length) {
+      const mpAvgP = _fmtSecKm(_avg(mpSplits.map(x => x[0])));
+      const mpH = mpSplits.filter(x => x[1]).map(x => x[1]);
+      chips.push(`${mpSplits.length}km @ MP · ${mpAvgP}/km${mpH.length ? ' · ' + Math.round(_avg(mpH)) + 'bpm' : ''}`);
+    }
+    if (a.drift != null) chips.push(`HR drift ${a.drift >= 0 ? '+' : ''}${a.drift}%`);
+    return `${acts.length > 1 ? `<div style="font-size:11px;font-weight:800;color:var(--muted);margin:${ai ? 16 : 0}px 0 6px">Activity ${ai + 1}</div>` : ''}
+      <div style="margin-bottom:9px">${chips.map(chip).join('')}</div>
+      ${a.sum ? `<div style="font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:12px;padding:8px 10px;background:#f8fafc;border-radius:8px">${a.sum}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:8px;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">
+        <span style="width:22px;text-align:right">Km</span><span style="flex:1">Pace (faster = longer)</span><span style="width:50px;text-align:right">Pace</span><span style="width:44px;text-align:right">HR</span><span style="width:22px"></span></div>
+      ${rows}`;
+  }).join('<hr style="border:none;border-top:1px solid var(--border);margin:14px 0">');
+  const key = [['speed', 'Speed <4:05'], ['mp', 'MP 4:05–4:25'], ['junk', 'Junk 4:25–5:00'], ['easy', 'Easy >5:00']]
+    .map(([k, l]) => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text2);font-weight:600"><span style="width:9px;height:9px;border-radius:3px;background:${BUCKET_COLOR[k]};display:inline-block"></span>${l}</span>`).join('');
+  return body + `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:11px;border-top:1px solid var(--border)">${key}</div>`;
+}
+
+// Show/hide the modal edit buttons — hidden for view-only visitors and on the Splits tab.
+function _syncModalButtons() {
+  const ro = !canEdit();
+  const hide = ro || currentTab === "splits";
+  let edited = false;
+  if (currentId) { const o = ORIG.find(x => x.id === currentId); if (o) edited = getSession(o).edited; }
+  const setD = (id, base) => { const b = document.getElementById(id); if (b) b.style.display = hide ? "none" : base; };
+  setD("mSaveBtn", ""); setD("mDoneBtn", ""); setD("mLockBtn", "");
+  const rb = document.getElementById("mResetBtn"); if (rb) rb.style.display = hide ? "none" : (edited ? "block" : "none");
 }
 
 // ── SCORING ───────────────────────────────────────────────────────────────────
